@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	gnet "github.com/shirou/gopsutil/v3/net"
 )
@@ -23,11 +24,22 @@ var upgrader = websocket.Upgrader{
 }
 
 type SystemInfo struct {
-	Time    string      `json:"time"`
-	CPU    CPUInfo     `json:"cpu"`
-	Memory MemoryInfo  `json:"memory"`
-	Disk   DiskInfo    `json:"disk"`
-	Net    NetworkInfo `json:"net"`
+	Time      string      `json:"time"`      // UTC ISO 时间
+	Timestamp int64       `json:"timestamp"` // 毫秒时间戳
+	OS        OSInfo      `json:"os"`
+	CPU       CPUInfo     `json:"cpu"`
+	Memory    MemoryInfo  `json:"memory"`
+	Disk      DiskInfo    `json:"disk"`
+	Net       NetworkInfo `json:"net"`
+}
+
+type OSInfo struct {
+	Hostname string `json:"hostname"`
+	Name     string `json:"name"`
+	Version  string `json:"version"`
+	Kernel   string `json:"kernel"`
+	Arch     string `json:"arch"`
+	Uptime   uint64 `json:"uptime"`
 }
 
 type CPUInfo struct {
@@ -88,6 +100,7 @@ func handleSystemWS(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("client connected:", r.RemoteAddr)
 
+	// 初始化网卡统计，用于计算每秒上传/下载速度
 	lastNet, err := getNetTotal()
 	if err != nil {
 		log.Println("get net init error:", err)
@@ -118,6 +131,8 @@ func handleSystemWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func collectSystemInfo(lastNet *NetTotal) (*SystemInfo, error) {
+	now := time.Now().UTC()
+
 	cpuPercent, err := cpu.Percent(0, false)
 	if err != nil {
 		return nil, err
@@ -133,6 +148,11 @@ func collectSystemInfo(lastNet *NetTotal) (*SystemInfo, error) {
 		return nil, err
 	}
 
+	hostInfo, err := host.Info()
+	if err != nil {
+		return nil, err
+	}
+
 	currentNet, err := getNetTotal()
 	if err != nil {
 		return nil, err
@@ -143,6 +163,7 @@ func collectSystemInfo(lastNet *NetTotal) (*SystemInfo, error) {
 		BytesRecvPerSec: safeSub(currentNet.BytesRecv, lastNet.BytesRecv),
 	}
 
+	// 更新上一次网卡数据
 	*lastNet = currentNet
 
 	cpuValue := 0.0
@@ -151,7 +172,16 @@ func collectSystemInfo(lastNet *NetTotal) (*SystemInfo, error) {
 	}
 
 	return &SystemInfo{
-		Time: time.Now().Format("2006-01-02 15:04:05"),
+		Time:      now.Format(time.RFC3339),
+		Timestamp: now.UnixMilli(),
+		OS: OSInfo{
+			Hostname: hostInfo.Hostname,
+			Name:     hostInfo.Platform,
+			Version:  hostInfo.PlatformVersion,
+			Kernel:   hostInfo.KernelVersion,
+			Arch:     hostInfo.KernelArch,
+			Uptime:   hostInfo.Uptime,
+		},
 		CPU: CPUInfo{
 			Percent: cpuValue,
 		},
@@ -190,7 +220,7 @@ func getNetTotal() (NetTotal, error) {
 func checkToken(r *http.Request) bool {
 	serverToken := os.Getenv("MONITOR_TOKEN")
 
-	// 如果没有设置 token，则拒绝启动鉴权通过，避免公网裸奔
+	// 没有设置 token 时，直接拒绝连接，避免裸奔
 	if serverToken == "" {
 		log.Println("MONITOR_TOKEN is empty")
 		return false
