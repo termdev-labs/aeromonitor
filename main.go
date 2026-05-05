@@ -8,6 +8,9 @@ import (
 	"time"
     "net"
     "strings"
+	"os/exec"
+	"syscall"
+
 
 	"github.com/gorilla/websocket"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -19,7 +22,7 @@ import (
 
 var upgrader = websocket.Upgrader{
 	// 支持 Nginx 转发后的 WebSocket 连接
-	// Token 已经做鉴权，这里不强限制 Origin，避免 Electron / Nginx 场景误伤
+	// Token 已经做鉴权，这里不强限制 Origin，避免 Nginx 场景误伤
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
@@ -82,10 +85,10 @@ func initLogger() {
 		return
 	}
 
-	// 同时输出到控制台和文件
+
 	log.SetOutput(file)
 
-	// 增加日期、时间、文件行号，方便排查问题
+
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 }
 
@@ -113,8 +116,41 @@ func getClientIP(r *http.Request) string {
 }
 
 
+// 只做一件事：后台化
+func daemonize() {
+	// 如果已经是 daemon，就不再 fork
+	for _, arg := range os.Args {
+		if arg == "--daemon" {
+			return
+		}
+	}
+
+	// ⭐ 创建子进程（自己启动自己）
+	cmd := exec.Command(os.Args[0], append(os.Args[1:], "--daemon")...)
+
+	// ⭐ 彻底断开输入输出
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+
+	// ⭐ 脱离终端（核心）
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
+
+	err := cmd.Start()
+	if err != nil {
+		panic(err)
+	}
+
+	// ⭐ 父进程直接退出
+	os.Exit(0)
+}
+
+
 
 func main() {
+    daemonize()
     initLogger()
 	http.HandleFunc("/ws/system", handleSystemWS)
 
@@ -132,6 +168,12 @@ func main() {
 
 func handleSystemWS(w http.ResponseWriter, r *http.Request) {
 	if !checkToken(r) {
+        log.Printf(
+      	"unauthorized access ip=%s path=%s ua=%s",
+      	getClientIP(r),
+      	r.URL.Path,
+      	r.UserAgent(),
+      )
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
