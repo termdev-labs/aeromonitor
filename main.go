@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+    "net"
+    "strings"
 
 	"github.com/gorilla/websocket"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -70,7 +72,50 @@ type NetTotal struct {
 	BytesRecv uint64
 }
 
+
+func initLogger() {
+	logFile := getEnv("MONITOR_LOG_FILE", "monitor.log")
+
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Println("open log file error:", err)
+		return
+	}
+
+	// 同时输出到控制台和文件
+	log.SetOutput(file)
+
+	// 增加日期、时间、文件行号，方便排查问题
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+}
+
+
+func getClientIP(r *http.Request) string {
+	// Nginx 配置了：proxy_set_header X-Real-IP $remote_addr;
+	ip := r.Header.Get("X-Real-IP")
+	if ip != "" {
+		return ip
+	}
+
+	// 兼容多级代理
+	forwarded := r.Header.Get("X-Forwarded-For")
+	if forwarded != "" {
+		return strings.TrimSpace(strings.Split(forwarded, ",")[0])
+	}
+
+	// fallback：直连时使用 RemoteAddr
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+
+	return host
+}
+
+
+
 func main() {
+    initLogger()
 	http.HandleFunc("/ws/system", handleSystemWS)
 
 	listenIP := getEnv("MONITOR_LISTEN_IP", "127.0.0.1")
@@ -98,7 +143,7 @@ func handleSystemWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	log.Println("client connected:", r.RemoteAddr)
+	log.Println("client connected:", getClientIP(r))
 
 	// 初始化网卡统计，用于计算每秒上传/下载速度
 	lastNet, err := getNetTotal()
@@ -124,7 +169,7 @@ func handleSystemWS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Println("client disconnected:", err)
+			log.Println("client disconnected:", getClientIP(r))
 			return
 		}
 	}
