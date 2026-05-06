@@ -158,8 +158,8 @@ func main() {
 	listenPort := getEnv("MONITOR_LISTEN_PORT", "8000")
 	addr := listenIP + ":" + listenPort
 
-	log.Println("server started:", addr)
-	log.Println("websocket path: ws://" + addr + "/ws/system?token=YOUR_TOKEN")
+	log.Println("websocket path: ws://" + addr + "/ws/system")
+    log.Println("auth: Sec-WebSocket-Protocol: bearer, <token>")
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal(err)
@@ -178,7 +178,22 @@ func handleSystemWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	respHeader := http.Header{}
+
+    protocol := r.Header.Get("Sec-WebSocket-Protocol")
+    
+    if strings.Contains(strings.ToLower(protocol), "bearer") {
+    	respHeader.Set(
+    		"Sec-WebSocket-Protocol",
+    		"bearer",
+    	)
+    }
+    
+    conn, err := upgrader.Upgrade(
+    	w,
+    	r,
+    	respHeader,
+    )
 	if err != nil {
 		log.Println("websocket upgrade error:", err)
 		return
@@ -307,26 +322,58 @@ func getNetTotal() (NetTotal, error) {
 func checkToken(r *http.Request) bool {
 	serverToken := os.Getenv("MONITOR_TOKEN")
 
-	// 没有设置 token 时，直接拒绝连接，避免裸奔
+	// 没有设置 token 时，直接拒绝连接
 	if serverToken == "" {
 		log.Println("MONITOR_TOKEN is empty")
 		return false
 	}
 
-	// 支持 ws://host/ws/system?token=xxx
-	clientToken := r.URL.Query().Get("token")
+	var clientToken string
 
-	// 也支持 Header: Authorization: Bearer xxx
+	// =========================
+	// 1. query token
+	// ws://host/ws/system?token=xxx
+	// =========================
+	clientToken = r.URL.Query().Get("token")
+
+	// =========================
+	// 2. Authorization: Bearer xxx
+	// =========================
 	if clientToken == "" {
 		auth := r.Header.Get("Authorization")
+
 		const prefix = "Bearer "
-		if len(auth) > len(prefix) && auth[:len(prefix)] == prefix {
-			clientToken = auth[len(prefix):]
+
+		if strings.HasPrefix(auth, prefix) {
+			clientToken = strings.TrimSpace(
+				auth[len(prefix):],
+			)
+		}
+	}
+
+	// =========================
+	// 3. Sec-WebSocket-Protocol
+	// 浏览器 WebSocket 推荐方案
+	// new WebSocket(url, ["bearer", token])
+	// =========================
+	if clientToken == "" {
+		protocol := r.Header.Get("Sec-WebSocket-Protocol")
+
+		parts := strings.Split(protocol, ",")
+
+		for i := 0; i < len(parts)-1; i++ {
+			name := strings.TrimSpace(parts[i])
+
+			if strings.EqualFold(name, "bearer") {
+				clientToken = strings.TrimSpace(parts[i+1])
+				break
+			}
 		}
 	}
 
 	return clientToken == serverToken
 }
+
 
 func getEnv(key string, defaultValue string) string {
 	value := os.Getenv(key)

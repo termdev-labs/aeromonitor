@@ -1,5 +1,6 @@
 #编译
-go build 
+
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o aeroshell-monitor
 
 #运行
 export MONITOR_TOKE=xxxx
@@ -9,7 +10,7 @@ export MONITOR_LISTEN_IP=127.0.0.1
 export MONITOR_LISTEN_PORT=8000
 
 #启动
-./monitor
+./aeroshell-monitor
 
 #连接方式
 
